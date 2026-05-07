@@ -1,0 +1,104 @@
+# Sentinel SCA — WebGoat dependency security scan
+# Scans WebGoat's Maven dependencies for known CVEs using Sentinel SCA.
+# WebGoat is deliberately insecure, so findings are expected — this is a capability test.
+
+name: Sentinel SCA — WebGoat Scan
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  schedule:
+    # Daily at 06:00 UTC to catch newly published CVEs
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      fail_on:
+        description: 'Fail on severity level'
+        required: false
+        default: 'critical'
+        type: choice
+        options: [critical, high, medium, low]
+
+permissions:
+  contents: read
+  security-events: write   # SARIF upload to GitHub Security tab
+  pages: write             # GitHub Pages deployment
+  id-token: write          # OIDC Pages deployment
+
+jobs:
+  sca-scan:
+    name: WebGoat Dependency Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Sentinel SCA
+        run: |
+          git clone --depth 1 https://github.com/PrinceORavens/sentinel-sca.git /tmp/sentinel-sca
+          cd /tmp/sentinel-sca && npm install --omit=dev && npm link
+
+      - name: Run SCA Scan
+        id: sca-scan
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          sentinel-sca scan \
+            --path . \
+            --ecosystem maven \
+            --output sarif,html \
+            --file sentinel-results \
+            --fail-on ${{ inputs.fail_on || 'critical' }} \
+            --baseline
+        continue-on-error: true
+
+      - name: Upload SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: sentinel-results.sarif
+          category: sentinel-sca
+
+      - name: Upload Report Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentinel-sca-webgoat-${{ github.run_id }}
+          path: |
+            sentinel-results.sarif
+            sentinel-results.html
+          retention-days: 30
+
+      - name: Prepare Pages artifact
+        if: github.ref == 'refs/heads/main' && always()
+        run: |
+          mkdir -p _site
+          cp sentinel-results.html _site/index.html
+
+      - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/main' && always()
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        if: github.ref == 'refs/heads/main' && always()
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Enforce Security Gate
+        if: steps.sca-scan.outcome == 'failure'
+        run: |
+          echo "::error::Sentinel SCA found vulnerabilities at or above the configured severity threshold."
+          echo "::notice::WebGoat is intentionally insecure — use --fail-on critical to gate on only the worst findings."
+          exit 1
