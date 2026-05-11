@@ -1,0 +1,66 @@
+name: Sentinel SCA
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'pom.xml'
+      - '**/pom.xml'
+      - 'build.gradle**'
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'
+
+jobs:
+  sentinel-sca:
+    name: Dependency Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Sentinel SCA
+        run: npm install -g github:PrinceORavens/sentinel-sca
+
+      - name: Run Sentinel SCA
+        id: scan
+        run: |
+          sentinel-sca scan \
+            --path . \
+            --output html,sarif,github \
+            --fail-on high \
+            --skip-secrets \
+            --skip-licenses
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        continue-on-error: true
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: sentinel-report.sarif
+          category: sentinel-sca
+        if: always()
+
+      - name: Upload HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentinel-sca-report
+          path: sentinel-report.html
+          retention-days: 30
+        if: always()
+
+      - name: Fail if blocking vulnerabilities found
+        if: steps.scan.outcome == 'failure'
+        run: exit 1
