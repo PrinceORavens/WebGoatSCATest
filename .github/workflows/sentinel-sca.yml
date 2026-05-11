@@ -68,6 +68,7 @@ jobs:
         with:
           sarif_file: sentinel-results.sarif
           category: sentinel-sca
+        continue-on-error: true   # SARIF upload requires public repo or GitHub Advanced Security
 
       - name: Upload Report Artifacts
         if: always()
